@@ -1,0 +1,14 @@
+[
+  {
+    "id": "cracked-screen-001",
+    "device": "Smartphone",
+    "symptoms": "The screen is cracked after a short drop. The phone is cool and touch input works.",
+    "expected_safety_flags": []
+  },
+  {
+    "id": "swollen-battery-001",
+    "device": "Smartphone",
+    "symptoms": "The phone back is bulging and the battery looks swollen.",
+    "expected_safety_flags": ["Possible swollen or bulging battery"]
+  }
+]
