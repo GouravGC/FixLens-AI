@@ -6,6 +6,4 @@ __pycache__/
 .streamlit/secrets.toml
 logs/*
 !logs/.gitkeep
-evidence/*
-!evidence/README.md
 .DS_Store
