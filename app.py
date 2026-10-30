@@ -1,8 +1,5 @@
 
-from io import BytesIO
-
 import streamlit as st
-from PIL import Image
 
 from fixlens.config import settings
 from fixlens.diagnosis import diagnose
@@ -10,242 +7,281 @@ from fixlens.safety import detect_hazards
 from fixlens.video import extract_video_frames
 
 
+# --------------------------------------------------
+# Page configuration
+# --------------------------------------------------
+
 st.set_page_config(
     page_title="FixLens AI",
-    page_icon="🔎",
+    page_icon="🔧",
     layout="wide",
 )
 
-st.title("🔎 FixLens AI")
-st.caption("Visual repair triage • Local and hosted inference")
+st.title("🔧 FixLens AI")
+st.caption(
+    "AI-assisted device troubleshooting using image and video evidence."
+)
 
 
-# -------------------- Sidebar --------------------
+# --------------------------------------------------
+# Baseten configuration
+# --------------------------------------------------
 
 with st.sidebar:
-    st.subheader("Inference settings")
+    st.header("Configuration")
 
-    providers = {
-        "Ollama (Local)": "ollama",
-        "OpenRouter (Hosted)": "openrouter",
-    }
+    st.markdown("### Baseten — Muse Spark Open")
+    st.write(f"**Model:** `{settings.baseten_model}`")
+    st.write(f"**Endpoint:** `{settings.baseten_base_url}`")
 
-    default_provider = (
-        "openrouter"
-        if str(settings.provider).lower() == "openrouter"
-        else "ollama"
-    )
-    default_label = next(
-        label for label, value in providers.items()
-        if value == default_provider
-    )
-
-    selected_label = st.radio(
-        "Select inference provider",
-        options=list(providers.keys()),
-        index=list(providers.keys()).index(default_label),
-        key="fixlens_provider_radio_v2",
-    )
-
-    provider = providers[selected_label]
-
-    if provider == "ollama":
-        st.markdown("### Ollama (Local)")
-        st.write(f"**Model:** `{settings.model}`")
-        st.write(f"**Endpoint:** `{settings.ollama_host}`")
-        st.info("Inference runs locally through Ollama.")
+    if settings.baseten_api_key:
+        st.success("Baseten API key configured")
     else:
-        st.markdown("### OpenRouter (Hosted)")
-        st.write(f"**Model:** `{settings.openrouter_model}`")
-        st.write("**Endpoint:** `https://openrouter.ai/api/v1`")
+        st.error("BASETEN_API_KEY is missing.")
 
-        if settings.openrouter_api_key:
-            st.success("API key configured")
-        else:
-            st.error("OPENROUTER_API_KEY is missing.")
+    st.divider()
 
-        st.info("Uploaded visual evidence is sent to the hosted provider.")
+    st.subheader("Inference limits")
+    st.write(f"**Maximum output tokens:** {settings.max_output_tokens}")
+    st.write(f"**Maximum video frames:** {settings.video_max_frames}")
+    st.write(f"**Maximum image width:** {settings.image_max_width}px")
 
 
-# -------------------- Input --------------------
+st.divider()
 
-input_col, report_col = st.columns([1, 1])
 
-with input_col:
+# --------------------------------------------------
+# User inputs
+# --------------------------------------------------
+
+left, right = st.columns(2)
+
+with left:
     st.subheader("1. Describe the problem")
 
-    device = st.selectbox(
-        "Device category",
-        [
-            "Smartphone",
-            "Laptop",
-            "Tablet",
-            "Headphones",
-            "Household appliance",
-            "Other",
-        ],
+    device = st.text_input(
+        "Device or equipment",
+        placeholder="e.g. laptop, washing machine, router",
     )
 
     symptoms = st.text_area(
         "Symptoms",
-        placeholder="Describe the issue, error messages, damage, or unusual behavior.",
-        height=130,
+        placeholder=(
+            "Describe the issue, warning lights, sounds, "
+            "or error messages."
+        ),
+        height=150,
     )
 
-    uploaded = st.file_uploader(
-        "Upload device photo or video",
-        type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "avi"],
-        accept_multiple_files=False,
-        help="Images and videos up to Streamlit's configured upload limit.",
-        key="fixlens_evidence_v2",
+    uploaded_photo = st.file_uploader(
+        "Upload a photo (optional)",
+        type=["png", "jpg", "jpeg", "webp"],
+        key="fixlens_photo",
     )
+
+    uploaded_video = st.file_uploader(
+        "Upload a video (optional)",
+        type=["mp4", "mov", "avi", "mkv"],
+        key="fixlens_video",
+    )
+
+
+# --------------------------------------------------
+# Evidence preview
+# --------------------------------------------------
+
+with right:
+    st.subheader("2. Review evidence")
 
     image_bytes = None
-    video_bytes = None
-    upload_kind = None
+    frames = []
 
-    if uploaded is not None:
-        filename = uploaded.name.lower()
+    if uploaded_photo is not None:
+        image_bytes = uploaded_photo.getvalue()
 
-        if filename.endswith((".png", ".jpg", ".jpeg", ".webp")):
-            upload_kind = "image"
-            try:
-                image = Image.open(BytesIO(uploaded.getvalue())).convert("RGB")
-                image.thumbnail((2048, 2048))
+        st.image(
+            image_bytes,
+            caption="Uploaded photo",
+            use_container_width=True,
+        )
 
-                st.image(
-                    image,
-                    caption="Uploaded device photo",
-                    use_container_width=True,
+    if uploaded_video is not None:
+        st.video(uploaded_video)
+        st.caption("Video frames will be extracted for AI analysis.")
+
+    if uploaded_photo is None and uploaded_video is None:
+        st.info("Upload a photo or video to provide visual evidence.")
+
+
+# --------------------------------------------------
+# Diagnosis
+# --------------------------------------------------
+
+if st.button(
+    "🔍 Diagnose problem",
+    type="primary",
+    use_container_width=True,
+):
+
+    if not settings.baseten_api_key:
+        st.error(
+            "BASETEN_API_KEY is missing. "
+            "Add it to your .env file and restart Streamlit."
+        )
+
+    elif not device.strip():
+        st.error("Please enter the device or equipment.")
+
+    elif not symptoms.strip():
+        st.error("Please describe the symptoms.")
+
+    elif uploaded_photo is None and uploaded_video is None:
+        st.error("Please upload a photo or video.")
+
+    else:
+        try:
+            # Extract video frames using configured limits.
+            if uploaded_video is not None:
+                with st.spinner("Extracting video frames..."):
+                    frames = extract_video_frames(
+                        uploaded_video.getvalue(),
+                        uploaded_video.name,
+                        max_frames=settings.video_max_frames,
+                        max_width=settings.image_max_width,
+                    )
+
+                if not frames:
+                    st.error("No usable frames could be extracted.")
+                    st.stop()
+
+                st.success(f"Extracted {len(frames)} video frame(s).")
+
+            # Safety screening
+            # Keep this compatible with the existing safety module.
+            if image_bytes:
+                st.subheader("Safety screening")
+
+                try:
+                    hazards = detect_hazards(image_bytes)
+
+                    if hazards:
+                        st.warning("Potential safety hazards detected.")
+                        st.write(hazards)
+                    else:
+                        st.info(
+                            "No hazards were reported by the safety "
+                            "screening step. This does not guarantee safety."
+                        )
+
+                except Exception as safety_error:
+                    st.warning(
+                        f"Safety screening could not complete: {safety_error}"
+                    )
+
+            # Call Baseten only.
+            with st.spinner(
+                "Analyzing evidence with Meta Muse Spark Open..."
+            ):
+                result = diagnose(
+                    device=device.strip(),
+                    symptoms=symptoms.strip(),
+                    image_bytes=image_bytes,
+                    provider="baseten",
+                    image_frames=frames,
                 )
 
-                buffer = BytesIO()
-                image.save(buffer, format="JPEG", quality=90)
-                image_bytes = buffer.getvalue()
-            except Exception as exc:
-                st.error(f"Could not read the image: {exc}")
+            # --------------------------------------------------
+            # Diagnosis report
+            # --------------------------------------------------
 
-        elif filename.endswith((".mp4", ".mov", ".avi")):
-            upload_kind = "video"
-            video_bytes = uploaded.getvalue()
-            if video_bytes:
-                st.video(video_bytes)
+            st.divider()
+            st.subheader("🧠 Diagnosis report")
+
+            # Supports both dictionary and string return formats.
+            if isinstance(result, dict):
+                report = result.get("report", "")
             else:
-                st.error("The video file is empty.")
+                report = str(result)
 
-
-# -------------------- Analysis --------------------
-
-with report_col:
-    st.subheader("2. Repair triage report")
-
-    st.warning(
-        "Safety first: this tool offers preliminary troubleshooting, "
-        "not a confirmed diagnosis. Do not open swollen batteries or "
-        "work on live electrical equipment."
-    )
-
-    if st.button("Analyze device", type="primary", use_container_width=True):
-        if uploaded is None:
-            st.error("Upload a device photo or video first.")
-        elif not symptoms.strip():
-            st.error("Enter the device symptoms first.")
-        elif upload_kind == "image" and image_bytes is None:
-            st.error("The image could not be processed.")
-        elif upload_kind == "video" and not video_bytes:
-            st.error("The video could not be read.")
-        elif upload_kind not in ("image", "video"):
-            st.error("Upload a supported photo or video.")
-        elif provider == "openrouter" and not settings.openrouter_api_key:
-            st.error(
-                "OpenRouter API key is missing. Configure OPENROUTER_API_KEY "
-                "in your environment and restart Streamlit."
-            )
-        else:
-            # Safety screening
-            try:
-                hazards = detect_hazards(symptoms.strip())
-            except Exception as exc:
-                hazards = None
-                st.error(f"Safety screening failed: {exc}")
-
-            if hazards is None:
-                st.warning("Analysis stopped because safety screening failed.")
+            if report:
+                st.markdown(report)
             else:
-                if isinstance(hazards, bool):
-                    hazard_found = hazards
-                    hazard_messages = ["Potential hazard detected."]
-                elif isinstance(hazards, str):
-                    hazard_found = bool(hazards.strip())
-                    hazard_messages = [hazards] if hazard_found else []
-                else:
-                    hazard_messages = list(hazards) if hazards else []
-                    hazard_found = bool(hazard_messages)
+                st.warning("The model returned an empty diagnosis.")
 
-                if hazard_found:
-                    st.error("Potential safety hazard detected.")
-                    for item in hazard_messages:
-                        st.write(f"- {item}")
+            # --------------------------------------------------
+            # Usage and cost
+            # --------------------------------------------------
 
-                    st.warning(
-                        "Stop using the device if it appears unsafe. "
-                        "Disconnect power only if it is safe to do so, "
-                        "and seek qualified professional assistance."
+            if isinstance(result, dict):
+                st.divider()
+                st.subheader("Inference details")
+
+                details_left, details_right = st.columns(2)
+
+                with details_left:
+                    st.write(
+                        "**Provider:**",
+                        result.get("provider", "Baseten"),
                     )
-                else:
-                    try:
-                        frames = None
+                    st.write(
+                        "**Model:**",
+                        result.get("model", settings.baseten_model),
+                    )
+                    st.write(
+                        "**Images analyzed:**",
+                        result.get("images_analyzed", 0),
+                    )
+                    st.write(
+                        "**Duration:**",
+                        result.get("duration_seconds", "N/A"),
+                    )
 
-                        if upload_kind == "video":
-                            with st.spinner("Extracting representative video frames..."):
-                                frames = extract_video_frames(
-                                    video_bytes,
-                                    filename=uploaded.name,
-                                    max_frames=4,
-                                    max_width=1024,
-                                )
+                usage = result.get("usage", {})
 
-                            st.success(f"Extracted {len(frames)} frames.")
+                with details_right:
+                    if usage:
+                        st.write(
+                            "**Input tokens:**",
+                            usage.get("prompt_tokens", "N/A"),
+                        )
+                        st.write(
+                            "**Output tokens:**",
+                            usage.get("completion_tokens", "N/A"),
+                        )
+                        st.write(
+                            "**Total tokens:**",
+                            usage.get("total_tokens", "N/A"),
+                        )
 
-                            with st.expander("Preview analyzed frames"):
-                                for timestamp, frame_data in frames:
-                                    st.image(
-                                        frame_data,
-                                        caption=f"Approx. {timestamp:.2f} seconds",
-                                        use_container_width=True,
-                                    )
+                        estimated_cost = usage.get("estimated_cost_usd")
 
-                        with st.spinner(f"Analyzing with {selected_label}..."):
-                            report = diagnose(
-                                device=device,
-                                symptoms=symptoms.strip(),
-                                image_bytes=image_bytes if upload_kind == "image" else None,
-                                provider=provider,
-                                image_frames=frames,
+                        if estimated_cost is not None:
+                            st.write(
+                                "**Estimated cost:**",
+                                f"${estimated_cost:.6f} USD",
                             )
-
-                        st.success("Analysis complete")
-                        st.markdown(report)
-
-                        st.download_button(
-                            "Download report",
-                            data=report,
-                            file_name="fixlens_diagnostic_report.md",
-                            mime="text/markdown",
-                            use_container_width=True,
+                    else:
+                        st.info(
+                            "Token usage was not returned by the provider."
                         )
 
-                    except Exception as exc:
-                        st.error("Analysis failed.")
-                        st.code(str(exc))
-                        st.caption(
-                            "Check your provider credentials, model support, "
-                            "Ollama status, network connection, and video format."
-                        )
+            # --------------------------------------------------
+            # Download report
+            # --------------------------------------------------
 
+            st.download_button(
+                "📥 Download diagnosis report",
+                data=report,
+                file_name="fixlens_diagnosis.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
 
-st.divider()
-st.caption(
-    "FixLens AI • Prototype for repair triage. Model outputs may be inaccurate; "
-    "verify any repair decision with a qualified technician."
-)
+        except Exception as exc:
+            st.error("Diagnosis failed.")
+            st.exception(exc)
+
+            st.info(
+                "Check the Baseten API key, model ID, endpoint, "
+                "and provider response."
+            )
